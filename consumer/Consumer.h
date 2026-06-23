@@ -10,6 +10,7 @@
     #endif
     #include <winsock2.h>
     #include <ws2tcpip.h>
+    #include<map>
     #include <windows.h>
     #define SOCKET_TYPE SOCKET
     #define CLOSE_SOCKET(s) closesocket(s)
@@ -47,7 +48,7 @@ public:
     
     long getCommittedOffset(const std::string& topic, const std::string& consumerId); // GET_OFFSET SDK
     bool commitOffset(const std::string& topic, const std::string& consumerId, long offset); // COMMIT SDK
-    std::vector<Record> poll(const std::string& topic, int lastOffset);
+   std::vector<Record> poll(const std::string& topic, const std::map<int, int>& partitionOffsets);
 };
 
 #endif // CONSUMER_H

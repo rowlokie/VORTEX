@@ -38,9 +38,20 @@ private:
 public:
     Producer(const std::string& host, int port);
     ~Producer();
-    bool createTopic(const std::string& topic); // Returns true on success
-    int send(const std::string& topic, const std::string& message); // Returns offset, or -1 on failure
-    std::vector<int> sendBatch(const std::string& topic, const std::vector<std::string>& messages);
+    bool createTopic(
+    const std::string& topic,
+    int partitions
+); // Returns true on success
+   int send(
+    const std::string& topic,
+    const std::string& key,
+    const std::string& message
+);// Returns offset, or -1 on failure
+    std::vector<int> sendBatch(
+    const std::string& topic,
+    const std::string& key,
+    const std::vector<std::string>& messages
+);
 };
 
 #endif // PRODUCER_H

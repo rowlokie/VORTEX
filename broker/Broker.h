@@ -3,6 +3,8 @@
 
 #include "TopicManager.h"
 #include <string>
+#include "Metadata.h"
+#include<unordered_map>
 
 #ifdef _WIN32
     #include <winsock2.h>

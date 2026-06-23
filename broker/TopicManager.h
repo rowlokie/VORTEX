@@ -4,7 +4,11 @@
 #include <string>
 #include <unordered_map>
 
+// Platform guard must come BEFORE Metadata.h so PlatformMutex is defined
 #ifdef _WIN32
+    #ifndef _WIN32_WINNT
+        #define _WIN32_WINNT 0x0600
+    #endif
     #include <windows.h>
     typedef CRITICAL_SECTION PlatformMutex;
 #else
@@ -12,22 +16,40 @@
     typedef std::mutex PlatformMutex;
 #endif
 
+#include "Metadata.h"
+
 class TopicManager {
 private:
     PlatformMutex topicMutex;
-    std::unordered_map<std::string, int> nextOffsets; // Cache of next offsets for topics
+    std::unordered_map<std::string, int> nextOffsets;
+    std::unordered_map<std::string, TopicMetadata> topicsMetadata;
 
-    int getNextOffset(const std::string& topic); // Helper to get/initialize the next offset
+int getPartition(
+    const std::string& topic,
+    const std::string& key
+);
+
+    int getNextOffset(const std::string& topic); // private helper
 
 public:
     TopicManager();
+    void recover();
     ~TopicManager();
-    bool createTopic(const std::string& topic);
-    int appendMessage(const std::string& topic, const std::string& message); // Returns assigned offset, or -1 on error
-    std::string getMessages(const std::string& topic, int afterOffset); // Returns records after the given offset
+   
+    bool createTopic(
+    const std::string& topic,
+    int partitionCount
+);
 
-    bool commitOffset(const std::string& topic, const std::string& consumerId, long offset); // Persist consumer offset
-    long getOffset(const std::string& topic, const std::string& consumerId); // Retrieve consumer offset
+long appendMessage(
+    const std::string& topic,
+    const std::string& key,
+    const std::string& message,
+    int& partitionId
+);// Returns assigned offset, or -1 on error
+    std::string getMessages(const std::string& topic, int partition, int afterOffset); // Returns records after the given offset for a specific partition
+
+bool commitOffset(const std::string& topic, const std::string& consumerId, int partition, long offset); // Persist per-partition consumer offset
+long getOffset(const std::string& topic, const std::string& consumerId, int partition); // Retrieve per-partition consumer offset
 };
-
 #endif // TOPIC_MANAGER_H

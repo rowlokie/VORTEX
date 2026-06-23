@@ -154,12 +154,10 @@ void Broker::handleClient(SOCKET_TYPE clientSocket) {
         std::memset(buffer, 0, sizeof(buffer));
         int bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
         if (bytesReceived <= 0) {
-            // Client disconnected or error
             break;
         }
 
         std::string request(buffer);
-        // Clean trailing whitespaces/newlines (like \r\n from telnet/nc)
         while (!request.empty() && (request.back() == '\r' || request.back() == '\n' || request.back() == ' ')) {
             request.pop_back();
         }
@@ -176,76 +174,81 @@ void Broker::handleClient(SOCKET_TYPE clientSocket) {
 
         if (action == "CREATE_TOPIC") {
             std::string topic;
-            ss >> topic;
-            if (!topic.empty() && topicManager.createTopic(topic)) {
-                std::cout << "[CREATE_TOPIC] topic=" << topic << std::endl;
+            int partitions = 1;
+            ss >> topic >> partitions;
+
+            if (!topic.empty() && topicManager.createTopic(topic, partitions)) {
+                std::cout << "[CREATE_TOPIC] topic=" << topic << " partitions=" << partitions << std::endl;
                 response = "OK\n";
             }
-        } else if (action == "PRODUCE") {
+        } 
+        else if (action == "PRODUCE") {
             std::string topic;
-            ss >> topic;
-            if (!topic.empty()) {
-                std::string message;
-                std::getline(ss, message);
-                // Strip leading space
-                if (!message.empty() && message[0] == ' ') {
-                    message = message.substr(1);
-                }
-                int offset = topicManager.appendMessage(topic, message);
-                if (offset != -1) {
-                    std::cout << "[PRODUCE] topic=" << topic << " msg=" << message << std::endl;
-                    response = "{\"status\":\"OK\",\"offset\":" + std::to_string(offset) + "}\n";
+            std::string key;
+            ss >> topic >> key;
 
-                    // Update metrics
-                    {
-                        StatsLockGuard statsLock(&statsMutex);
-                        messagesProduced++;
-                        std::cout << "[STATS] Produced=" << messagesProduced << " Consumed=" << messagesConsumed << std::endl;
-                    }
-                }
+            std::string message;
+            std::getline(ss, message);
+
+            if (!message.empty() && message[0] == ' ') {
+                message = message.substr(1);
             }
-        } else if (action == "CONSUME") {
+
+            int partitionId;
+            long offset = topicManager.appendMessage(topic, key, message, partitionId);
+
+            if (offset != -1) {
+                response = "{\"status\":\"OK\",\"partition\":" + std::to_string(partitionId) + ",\"offset\":" + std::to_string(offset) + "}\n";
+            }
+        } 
+        else if (action == "CONSUME") {
             std::string topic;
-            int offset = 0;
-            if (ss >> topic >> offset) {
-                std::cout << "[CONSUME] topic=" << topic << " offset=" << offset << std::endl;
-                std::string messagesData = topicManager.getMessages(topic, offset);
+            int partition;
+            int offset;
+
+            if (ss >> topic >> partition >> offset) {
+                std::cout << "[CONSUME] topic=" << topic << " partition=" << partition << " offset=" << offset << std::endl;
+
+                std::string messagesData = topicManager.getMessages(topic, partition, offset);
                 response = messagesData + "\n";
 
-                // Count consumed
                 long count = 0;
                 std::stringstream temp(messagesData);
-                std::string tempLine;
-                while (std::getline(temp, tempLine)) {
-                    if (!tempLine.empty()) count++;
+                std::string line;
+                while (std::getline(temp, line)) {
+                    if (!line.empty()) count++;
                 }
 
-                // Update metrics
                 {
                     StatsLockGuard statsLock(&statsMutex);
                     messagesConsumed += count;
                     std::cout << "[STATS] Produced=" << messagesProduced << " Consumed=" << messagesConsumed << std::endl;
                 }
             }
-        } else if (action == "COMMIT") {
+        } 
+        else if (action == "COMMIT") {
             std::string topic;
             std::string consumerId;
-            long offset = 0;
-            if (ss >> topic >> consumerId >> offset) {
-                if (topicManager.commitOffset(topic, consumerId, offset)) {
+            int partition;
+            long offset;
+            if (ss >> topic >> consumerId >> partition >> offset) {
+                if (topicManager.commitOffset(topic, consumerId, partition, offset)) {
                     response = "{\"status\":\"OK\"}\n";
                 }
             }
-        } else if (action == "GET_OFFSET") {
+        } 
+        else if (action == "GET_OFFSET") {
             std::string topic;
             std::string consumerId;
-            if (ss >> topic >> consumerId) {
-                long offset = topicManager.getOffset(topic, consumerId);
+            int partition;
+            if (ss >> topic >> consumerId >> partition) {
+                long offset = topicManager.getOffset(topic, consumerId, partition);
                 response = "{\"offset\":" + std::to_string(offset) + "}\n";
             }
         }
 
         send(clientSocket, response.c_str(), response.length(), 0);
-    }
+    }  // ← THIS closes the while loop
     CLOSE_SOCKET(clientSocket);
-}
+}  // ← THIS closes the handleClient function
+

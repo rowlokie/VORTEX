@@ -15,7 +15,9 @@ int main() {
 
     // 2. Poll messages starting after that offset
     std::cout << "Polling messages starting after offset " << committedOffset << "...\n\n";
-    std::vector<Record> messages = consumer.poll(topic, committedOffset);
+    std::map<int, int> offsets;
+offsets[0] = committedOffset;  // Use partition 0
+std::vector<Record> messages = consumer.poll(topic, offsets);
 
     if (messages.empty()) {
         std::cout << "No new messages found.\n";

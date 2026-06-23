@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cstring>
 #include <sstream>
+#include <map>
 
 Consumer::Consumer(const std::string& host, int port)
     : host(host), port(port), clientSocket(INVALID_SOCKET_VAL), connected(false) {}
@@ -9,6 +10,8 @@ Consumer::Consumer(const std::string& host, int port)
 Consumer::~Consumer() {
     disconnect();
 }
+
+// ---------------- CONNECTION ----------------
 
 bool Consumer::connectToServer() {
     if (connected) return true;
@@ -27,8 +30,9 @@ bool Consumer::connectToServer() {
     hints.ai_socktype = SOCK_STREAM;
 
     std::string portStr = std::to_string(port);
+
     if (getaddrinfo(host.c_str(), portStr.c_str(), &hints, &res) != 0) {
-        std::cerr << "[Consumer SDK] Host resolution failed: " << host << "\n";
+        std::cerr << "[Consumer SDK] Host resolution failed.\n";
 #ifdef _WIN32
         WSACleanup();
 #endif
@@ -37,7 +41,6 @@ bool Consumer::connectToServer() {
 
     clientSocket = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (clientSocket == INVALID_SOCKET_VAL) {
-        std::cerr << "[Consumer SDK] Failed to create socket.\n";
         freeaddrinfo(res);
 #ifdef _WIN32
         WSACleanup();
@@ -56,150 +59,168 @@ bool Consumer::connectToServer() {
 
     freeaddrinfo(res);
     connected = true;
+
     std::cout << "[Consumer SDK] Connected to broker at " << host << ":" << port << "\n";
     return true;
 }
 
 void Consumer::disconnect() {
-    if (connected) {
-        if (clientSocket != INVALID_SOCKET_VAL) {
-            CLOSE_SOCKET(clientSocket);
-            clientSocket = INVALID_SOCKET_VAL;
-        }
-        connected = false;
-        std::cout << "[Consumer SDK] Disconnected from broker.\n";
-#ifdef _WIN32
-        WSACleanup();
-#endif
+    if (!connected) return;
+
+    if (clientSocket != INVALID_SOCKET_VAL) {
+        CLOSE_SOCKET(clientSocket);
+        clientSocket = INVALID_SOCKET_VAL;
     }
+
+    connected = false;
+
+#ifdef _WIN32
+    WSACleanup();
+#endif
+
+    std::cout << "[Consumer SDK] Disconnected from broker.\n";
 }
 
+// ---------------- OFFSET (STILL GLOBAL API, BUT BROKER MUST STORE PER PARTITION) ----------------
+
 long Consumer::getCommittedOffset(const std::string& topic, const std::string& consumerId) {
-    if (!connected) {
-        if (!connectToServer()) return 0;
-    }
+    if (!connected && !connectToServer()) return 0;
 
     std::string payload = "GET_OFFSET " + topic + " " + consumerId + "\n";
-    int sentBytes = ::send(clientSocket, payload.c_str(), (int)payload.length(), 0);
-    if (sentBytes <= 0) {
-        std::cerr << "[Consumer SDK] Write failed on GET_OFFSET. Reconnecting...\n";
+
+    if (::send(clientSocket, payload.c_str(), (int)payload.size(), 0) <= 0) {
         disconnect();
         return 0;
     }
 
     char buffer[1024];
     std::memset(buffer, 0, sizeof(buffer));
-    int receivedBytes = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
-    if (receivedBytes <= 0) {
-        std::cerr << "[Consumer SDK] Read failed on GET_OFFSET. Reconnecting...\n";
+
+    int bytes = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
+    if (bytes <= 0) {
         disconnect();
         return 0;
     }
 
     std::string response(buffer);
-    std::string prefix = "\"offset\":";
-    size_t pos = response.find(prefix);
+
+    // NOTE: still returns single value (can be extended later)
+    size_t pos = response.find("\"offset\":");
     if (pos != std::string::npos) {
-        size_t start = pos + prefix.length();
-        while (start < response.length() && (response[start] == ' ' || response[start] == ':')) {
-            start++;
-        }
-        size_t end = start;
-        while (end < response.length() && std::isdigit(response[end])) {
-            end++;
-        }
-        try {
-            return std::stol(response.substr(start, end - start));
-        } catch (...) {
-            return 0;
-        }
+        pos += 10;
+        while (pos < response.size() && (response[pos] == ' ' || response[pos] == ':')) pos++;
+
+        size_t end = pos;
+        while (end < response.size() && isdigit(response[end])) end++;
+
+        return std::stol(response.substr(pos, end - pos));
     }
+
     return 0;
 }
 
-bool Consumer::commitOffset(const std::string& topic, const std::string& consumerId, long offset) {
-    if (!connected) {
-        if (!connectToServer()) return false;
-    }
+// ---------------- COMMIT (STILL GLOBAL API, BUT SHOULD BE EXTENDED LATER) ----------------
 
-    std::string payload = "COMMIT " + topic + " " + consumerId + " " + std::to_string(offset) + "\n";
-    int sentBytes = ::send(clientSocket, payload.c_str(), (int)payload.length(), 0);
-    if (sentBytes <= 0) {
-        std::cerr << "[Consumer SDK] Write failed on COMMIT. Reconnecting...\n";
+bool Consumer::commitOffset(const std::string& topic,
+                             const std::string& consumerId,
+                             long offset) {
+    if (!connected && !connectToServer()) return false;
+
+    std::string payload =
+        "COMMIT " + topic + " " + consumerId + " " + std::to_string(offset) + "\n";
+
+    if (::send(clientSocket, payload.c_str(), (int)payload.size(), 0) <= 0) {
         disconnect();
         return false;
     }
 
     char buffer[1024];
     std::memset(buffer, 0, sizeof(buffer));
-    int receivedBytes = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
-    if (receivedBytes <= 0) {
-        std::cerr << "[Consumer SDK] Read failed on COMMIT. Reconnecting...\n";
+
+    int bytes = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
+    if (bytes <= 0) {
         disconnect();
         return false;
     }
 
     std::string response(buffer);
-    return (response.find("\"status\":\"OK\"") != std::string::npos);
+    return response.find("\"status\":\"OK\"") != std::string::npos;
 }
 
-std::vector<Record> Consumer::poll(const std::string& topic, int lastOffset) {
+// ---------------- MAIN FIX: PARTITION-AWARE POLL ----------------
+
+std::vector<Record> Consumer::poll(
+    const std::string& topic,
+    const std::map<int, int>& partitionOffsets
+) {
     std::vector<Record> records;
-    
-    if (!connected) {
-        if (!connectToServer()) {
-            return records;
-        }
-    }
 
-    std::string payload = "CONSUME " + topic + " " + std::to_string(lastOffset) + "\n";
-    int sentBytes = ::send(clientSocket, payload.c_str(), (int)payload.length(), 0);
-    if (sentBytes <= 0) {
-        std::cerr << "[Consumer SDK] Write failed on CONSUME. Reconnecting...\n";
-        disconnect();
+    if (!connected && !connectToServer())
         return records;
-    }
 
-    std::string response;
-    char buffer[1024];
-    while (true) {
-        std::memset(buffer, 0, sizeof(buffer));
-        int receivedBytes = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
-        if (receivedBytes <= 0) {
-            std::cerr << "[Consumer SDK] Read failed on CONSUME. Reconnecting...\n";
+    // ✅ FIXED: Use traditional loop instead of structured binding
+    for (const auto& pair : partitionOffsets) {
+        int partition = pair.first;
+        int offset = pair.second;
+
+        std::string payload =
+            "CONSUME " + topic + " " +
+            std::to_string(partition) + " " +
+            std::to_string(offset) + "\n";
+
+        if (::send(clientSocket, payload.c_str(), (int)payload.size(), 0) <= 0) {
             disconnect();
-            break;
-        }
-        buffer[receivedBytes] = '\0';
-        response += buffer;
-
-        // Check if the response ends with "\n\n" or if it is just "\n" (empty result)
-        if (response == "\n" || (response.length() >= 2 && response.substr(response.length() - 2) == "\n\n")) {
-            break;
-        }
-    }
-
-    std::stringstream ss(response);
-    std::string line;
-    while (std::getline(ss, line)) {
-        if (line.empty()) {
-            break; // Stop on terminating blank line
+            continue;
         }
 
-        // Parse offset|timestamp|message
-        size_t firstPipe = line.find('|');
-        size_t secondPipe = line.find('|', firstPipe + 1);
-        if (firstPipe != std::string::npos && secondPipe != std::string::npos) {
-            try {
-                long offset = std::stol(line.substr(0, firstPipe));
-                long ts = std::stol(line.substr(firstPipe + 1, secondPipe - firstPipe - 1));
-                std::string msg = line.substr(secondPipe + 1);
-                records.push_back({offset, ts, msg});
-            } catch (...) {
-                // Ignore malformed lines
+        std::string response;
+        char buffer[1024];
+
+        while (true)
+        {
+            std::memset(buffer, 0, sizeof(buffer));
+
+            int bytes = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
+            if (bytes <= 0) {
+                disconnect();
+                break;
+            }
+
+            buffer[bytes] = '\0';
+            response += buffer;
+
+            if (response == "\n" ||
+                (response.size() >= 2 &&
+                 response.substr(response.size() - 2) == "\n\n")) {
+                break;
             }
         }
-    }
+
+        std::stringstream ss(response);
+        std::string line;
+
+        while (std::getline(ss, line))
+        {
+            if (line.empty()) continue;
+
+            size_t p1 = line.find('|');
+            size_t p2 = line.find('|', p1 + 1);
+
+            if (p1 == std::string::npos || p2 == std::string::npos)
+                continue;
+
+            try {
+                long off = std::stol(line.substr(0, p1));
+                long ts  = std::stol(line.substr(p1 + 1, p2 - p1 - 1));
+                std::string msg = line.substr(p2 + 1);
+
+                records.push_back({off, ts, msg});
+            }
+            catch (...) {
+                // ignore malformed
+            }
+        }
+    }  // ← This closes the for loop
 
     return records;
 }

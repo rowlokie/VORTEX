@@ -81,7 +81,10 @@ void Producer::disconnect() {
     }
 }
 
-bool Producer::createTopic(const std::string& topic) {
+bool Producer::createTopic(
+    const std::string& topic,
+    int partitions
+) {
     int retries = 3;
     while (retries > 0) {
         if (!connected) {
@@ -93,7 +96,12 @@ bool Producer::createTopic(const std::string& topic) {
             }
         }
 
-        std::string payload = "CREATE_TOPIC " + topic + "\n";
+       std::string payload =
+    "CREATE_TOPIC " +
+    topic +
+    " " +
+    std::to_string(partitions)
+    + "\n";
         int sentBytes = ::send(clientSocket, payload.c_str(), (int)payload.length(), 0);
         if (sentBytes <= 0) {
             std::cerr << "[SDK] Write failed. Attempting reconnect...\n";
@@ -129,7 +137,7 @@ bool Producer::createTopic(const std::string& topic) {
     return false;
 }
 
-int Producer::send(const std::string& topic, const std::string& message) {
+int Producer::send(const std::string& topic, const std::string& key,const std::string& message) {
     int retries = 3;
     while (retries > 0) {
         if (!connected) {
@@ -141,7 +149,14 @@ int Producer::send(const std::string& topic, const std::string& message) {
             }
         }
 
-        std::string payload = "PRODUCE " + topic + " " + message + "\n";
+        std::string payload =
+    "PRODUCE " +
+    topic +
+    " " +
+    key+
+    " " +
+    message +
+    "\n";
         int sentBytes = ::send(clientSocket, payload.c_str(), (int)payload.length(), 0);
         if (sentBytes <= 0) {
             std::cerr << "[SDK] Write failed. Attempting reconnect...\n";
@@ -193,12 +208,24 @@ int Producer::send(const std::string& topic, const std::string& message) {
     return -1;
 }
 
-std::vector<int> Producer::sendBatch(const std::string& topic, const std::vector<std::string>& messages) {
+std::vector<int> Producer::sendBatch(
+    const std::string& topic,
+    const std::string& key,
+    const std::vector<std::string>& messages
+)
+{
     std::vector<int> offsets;
-    std::cout << "[SDK] Starting batch publication of " << messages.size() << " messages...\n";
-    for (const auto& message : messages) {
-        int offset = send(topic, message);
-        offsets.push_back(offset);
+
+    for(const auto& msg : messages)
+    {
+        offsets.push_back(
+            send(
+                topic,
+                key,
+                msg
+            )
+        );
     }
+
     return offsets;
 }
