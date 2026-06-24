@@ -34,12 +34,14 @@ public:
     }
 };
 
-TopicManager::TopicManager() {
+TopicManager::TopicManager(int brokerid) 
+    :replicationManager(brokerid) {
 #ifdef _WIN32
     InitializeCriticalSection(&topicMutex);
 #endif
     make_dir("data");
     make_dir("data/offsets");
+    make_dir("data/meta");
     recover();
 }
 
@@ -251,6 +253,9 @@ long TopicManager::appendMessage(
     int& partitionId
 )
 {
+LogLockGuard lock(&topicMutex);
+
+
     auto topicIt =
         topicsMetadata.find(topic);
 
@@ -293,6 +298,15 @@ long TopicManager::appendMessage(
         << "|"
         << message
         << "\n";
+
+    file.close();
+
+    //Replication : forward to followers if this broker is leader
+
+    if(isPartitionLeader(topic,partitionId)){
+        replicateMessage(topic,partitionId,offset,message);
+    }
+
 
     return offset;
 }
@@ -434,4 +448,72 @@ std::string TopicManager::getMessagesForConsumer(const std::string& groupId,
     }
     
     return response.str();
+}
+
+
+// broker/TopicManager.cpp - Add these at the end
+
+void TopicManager::registerBroker(const BrokerInfo& broker) {
+    replicationManager.registerBroker(broker);
+}
+
+void TopicManager::unregisterBroker(int brokerId) {
+    replicationManager.unregisterBroker(brokerId);
+}
+
+int TopicManager::getPartitionLeader(const std::string& topic, int partition) {
+    return replicationManager.getPartitionLeader(topic, partition);
+}
+
+void TopicManager::setPartitionLeader(const std::string& topic, int partition, int leaderBrokerId) {
+    replicationManager.setPartitionLeader(topic, partition, leaderBrokerId);
+}
+
+void TopicManager::addFollower(const std::string& topic, int partition, int followerBrokerId) {
+    replicationManager.addFollower(topic, partition, followerBrokerId);
+}
+
+bool TopicManager::isPartitionLeader(const std::string& topic, int partition) {
+    return replicationManager.isLeader(topic, partition);
+}
+
+std::vector<int> TopicManager::getPartitionReplicas(const std::string& topic, int partition) {
+    return replicationManager.getFollowers(topic, partition);
+}
+
+void TopicManager::replicateMessage(const std::string& topic, int partition, 
+                                   long offset, const std::string& message) {
+    replicationManager.replicateToFollowers(topic, partition, offset, message);
+}
+
+bool TopicManager::receiveReplication(const std::string& topic, int partition, 
+                                     long offset, const std::string& message) {
+    // Follower receives replicated message - write to local storage
+    LogLockGuard lock(&topicMutex);
+    
+    auto it = topicsMetadata.find(topic);
+    if (it == topicsMetadata.end()) {
+        return false;
+    }
+    
+    auto& partitions = it->second.partitions;
+    if (partition < 0 || partition >= static_cast<int>(partitions.size())) {
+        return false;
+    }
+    
+    auto partitionPtr = partitions[partition];
+    
+    std::ofstream file(partitionPtr->filePath, std::ios::app);
+    if (!file.is_open()) {
+        return false;
+    }
+    
+    std::time_t ts = std::time(nullptr);
+    file << offset << "|" << ts << "|" << message << "\n";
+    file.close();
+    
+    std::cout << "[REPLICATION] Follower received message for " << topic 
+              << "-" << partition << " offset " << offset << std::endl;
+    
+    return true;
 }

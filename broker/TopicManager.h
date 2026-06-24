@@ -5,6 +5,8 @@
 #include <unordered_map>
 #include "Metadata.h"
 #include "GroupManager.h"
+#include "ReplicationManager.h"
+
 // Platform guard must come BEFORE Metadata.h so PlatformMutex is defined
 #ifdef _WIN32
     #ifndef _WIN32_WINNT
@@ -25,6 +27,7 @@ private:
     std::unordered_map<std::string, int> nextOffsets;
     std::unordered_map<std::string, TopicMetadata> topicsMetadata;
     GroupManager groupManager;
+    ReplicationManager replicationManager;
 
 int getPartition(
     const std::string& topic,
@@ -34,7 +37,7 @@ int getPartition(
     int getNextOffset(const std::string& topic); // private helper
 
 public:
-    TopicManager();
+    TopicManager(int brokerid=1);
     void recover();
     ~TopicManager();
    
@@ -66,5 +69,18 @@ long getOffset(const std::string& topic, const std::string& consumerId, int part
                                           const std::string& consumerId);
        std::string getMessagesForConsumer(const std::string& groupId, 
                                        const std::string& consumerId);
+    
+  //Replication Methods
+     void registerBroker(const BrokerInfo& broker);
+    void unregisterBroker(int brokerId);
+    int getPartitionLeader(const std::string& topic, int partition);
+    void setPartitionLeader(const std::string& topic, int partition, int leaderBrokerId);
+    void addFollower(const std::string& topic, int partition, int followerBrokerId);
+    bool isPartitionLeader(const std::string& topic, int partition);
+    std::vector<int> getPartitionReplicas(const std::string& topic, int partition);
+    void replicateMessage(const std::string& topic, int partition, 
+                         long offset, const std::string& message);
+    bool receiveReplication(const std::string& topic, int partition, 
+                           long offset, const std::string& message);         
 };
 #endif // TOPIC_MANAGER_H
