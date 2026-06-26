@@ -4,7 +4,7 @@
 #include "TopicManager.h"
 #include <string>
 #include "Metadata.h"
-#include<unordered_map>
+#include <unordered_map>
 
 #ifdef _WIN32
     #include <winsock2.h>
@@ -38,15 +38,6 @@ private:
     long messagesConsumed;
 
     void handleClient(SOCKET_TYPE clientSocket);
-    static void handleClientThread(Broker* broker, SOCKET_TYPE clientSocket);
-
-#ifdef _WIN32
-    static DWORD WINAPI ClientThreadProc(LPVOID lpParam);
-    struct ThreadData {
-        Broker* broker;
-        SOCKET_TYPE clientSocket;
-    };
-#endif
 
 public:
     Broker(int port);

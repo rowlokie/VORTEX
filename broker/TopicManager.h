@@ -2,12 +2,14 @@
 #define TOPIC_MANAGER_H
 
 #include <string>
+#include <vector>
 #include <unordered_map>
 #include "Metadata.h"
 #include "GroupManager.h"
 #include "ReplicationManager.h"
+#include "MetadataService.h"
 
-// Platform guard must come BEFORE Metadata.h so PlatformMutex is defined
+// Platform guard for mutex
 #ifdef _WIN32
     #ifndef _WIN32_WINNT
         #define _WIN32_WINNT 0x0600
@@ -19,8 +21,6 @@
     typedef std::mutex PlatformMutex;
 #endif
 
-#include "Metadata.h"
-
 class TopicManager {
 private:
     PlatformMutex topicMutex;
@@ -28,50 +28,60 @@ private:
     std::unordered_map<std::string, TopicMetadata> topicsMetadata;
     GroupManager groupManager;
     ReplicationManager replicationManager;
+    MetadataService metadataService;
 
-int getPartition(
-    const std::string& topic,
-    const std::string& key
-);
-
+    int getPartition(const std::string& topic, const std::string& key);
     int getNextOffset(const std::string& topic); // private helper
 
 public:
-    TopicManager(int brokerid=1);
+    TopicManager(int brokerid = 1);
     void recover();
     ~TopicManager();
    
-    bool createTopic(
-    const std::string& topic,
-    int partitionCount
-);
+    bool createTopic(const std::string& topic, int partitionCount);
 
-long appendMessage(
-    const std::string& topic,
-    const std::string& key,
-    const std::string& message,
-    int& partitionId
-);// Returns assigned offset, or -1 on error
-    std::string getMessages(const std::string& topic, int partition, int afterOffset); // Returns records after the given offset for a specific partition
+    long appendMessage(const std::string& topic,
+                       const std::string& key,
+                       const std::string& message,
+                       int& partitionId); // Returns assigned offset, or -1 on error
+    
+    std::string getMessages(const std::string& topic, 
+                           int partition, 
+                           int afterOffset); // Returns records after the given offset for a specific partition
 
-bool commitOffset(const std::string& topic, const std::string& consumerId, int partition, long offset); // Persist per-partition consumer offset
-long getOffset(const std::string& topic, const std::string& consumerId, int partition); // Retrieve per-partition consumer offset
+    bool commitOffset(const std::string& topic, 
+                      const std::string& consumerId, 
+                      int partition, 
+                      long offset); // Persist per-partition consumer offset
+    
+    long getOffset(const std::string& topic, 
+                   const std::string& consumerId, 
+                   int partition); // Retrieve per-partition consumer offset
 
- bool joinGroup(const std::string& groupId, 
+    bool joinGroup(const std::string& groupId, 
                    const std::string& topic, 
                    const std::string& consumerId);
     
-    bool leaveGroup(const std::string& groupId, const std::string& consumerId);
+    bool leaveGroup(const std::string& groupId, 
+                    const std::string& consumerId);
     
-    bool heartbeat(const std::string& groupId, const std::string& consumerId);
+    bool heartbeat(const std::string& groupId, 
+                   const std::string& consumerId);
     
     std::vector<int> getConsumerPartitions(const std::string& groupId, 
-                                          const std::string& consumerId);
-       std::string getMessagesForConsumer(const std::string& groupId, 
+                                           const std::string& consumerId);
+    
+    std::string getMessagesForConsumer(const std::string& groupId, 
                                        const std::string& consumerId);
     
-  //Replication Methods
-     void registerBroker(const BrokerInfo& broker);
+    // Metadata methods
+    std::string getTopicMetadata(const std::string& topicName);
+    std::string getAllTopicsMetadata();
+    std::string getClusterStatus();
+    std::string getBrokerList();
+
+    // Replication Methods
+    void registerBroker(const BrokerInfo& broker);
     void unregisterBroker(int brokerId);
     int getPartitionLeader(const std::string& topic, int partition);
     void setPartitionLeader(const std::string& topic, int partition, int leaderBrokerId);
@@ -81,6 +91,7 @@ long getOffset(const std::string& topic, const std::string& consumerId, int part
     void replicateMessage(const std::string& topic, int partition, 
                          long offset, const std::string& message);
     bool receiveReplication(const std::string& topic, int partition, 
-                           long offset, const std::string& message);         
+                           long offset, const std::string& message);
 };
+
 #endif // TOPIC_MANAGER_H
