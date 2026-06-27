@@ -14,6 +14,8 @@
 #include <atomic>
 #include <sys/stat.h>
 
+
+
 #ifdef _WIN32
 #include <direct.h>
 #include <windows.h>
@@ -257,6 +259,61 @@ bool TopicManager::createTopic(const std::string& topic, int partitionCount) {
     return true;
 }
 
+// ==================== Helper Functions for Log Indexing ====================
+
+static void writeIndexEntry(const std::string& indexPath, long long offset, long long bytePosition) {
+    std::ofstream indexFile(indexPath, std::ios::out | std::ios::binary | std::ios::app);
+    if (indexFile.is_open()) {
+        indexFile.write(reinterpret_cast<const char*>(&offset), sizeof(offset));
+        indexFile.write(reinterpret_cast<const char*>(&bytePosition), sizeof(bytePosition));
+        indexFile.close();
+    }
+}
+
+static long long getBytePositionFromIndex(const std::string& indexPath, long targetOffset) {
+    std::ifstream indexFile(indexPath, std::ios::in | std::ios::binary);
+    if (!indexFile.is_open()) {
+        return 0; // Fallback to start of log file if index is not found
+    }
+    
+    indexFile.seekg(0, std::ios::end);
+    std::streampos fileSize = indexFile.tellg();
+    long long numEntries = fileSize / 16;
+    if (numEntries <= 0) {
+        indexFile.close();
+        return 0;
+    }
+    
+    long long low = 0;
+    long long high = numEntries - 1;
+    long long resultPosition = 0;
+    bool found = false;
+    
+    while (low <= high) {
+        long long mid = low + (high - low) / 2;
+        indexFile.seekg(mid * 16, std::ios::beg);
+        
+        long long midOffset = 0;
+        long long midPos = 0;
+        indexFile.read(reinterpret_cast<char*>(&midOffset), sizeof(midOffset));
+        indexFile.read(reinterpret_cast<char*>(&midPos), sizeof(midPos));
+        
+        if (midOffset > targetOffset) {
+            resultPosition = midPos;
+            found = true;
+            high = mid - 1; // Try to find a smaller offset that is still > targetOffset
+        } else {
+            low = mid + 1;
+        }
+    }
+    
+    indexFile.close();
+    if (found) {
+        return resultPosition;
+    }
+    return -1; // targetOffset is greater than any offset in index
+}
+
 // ==================== Message Operations ====================
 
 long TopicManager::appendMessage(const std::string& topic,
@@ -276,6 +333,14 @@ long TopicManager::appendMessage(const std::string& topic,
 
     long offset = partition->nextOffset++;
 
+    // Find physical byte position before appending
+    std::ifstream checkSize(partition->filePath, std::ios::binary | std::ios::ate);
+    long long bytePosition = 0;
+    if (checkSize.is_open()) {
+        bytePosition = checkSize.tellg();
+        checkSize.close();
+    }
+
     std::ofstream file(partition->filePath, std::ios::app);
     if (!file.is_open()) {
         return -1;
@@ -284,6 +349,10 @@ long TopicManager::appendMessage(const std::string& topic,
     std::time_t ts = std::time(nullptr);
     file << offset << "|" << ts << "|" << message << "\n";
     file.close();
+
+    // Write companion index entry
+    std::string indexPath = "data/" + topic + "-" + std::to_string(partitionId) + ".index";
+    writeIndexEntry(indexPath, offset, bytePosition);
 
     // Replication: forward to followers if this broker is leader
     if (isPartitionLeader(topic, partitionId)) {
@@ -317,9 +386,20 @@ std::string TopicManager::getMessages(const std::string& topic,
 
     auto partition = partitions[partitionId];
 
-    std::ifstream file(partition->filePath);
+    // Use binary search on the index to seek directly to target byte position
+    std::string indexPath = "data/" + topic + "-" + std::to_string(partitionId) + ".index";
+    long long startBytePosition = getBytePositionFromIndex(indexPath, afterOffset);
+    if (startBytePosition == -1) {
+        return ""; // No new messages
+    }
+
+    std::ifstream file(partition->filePath, std::ios::in | std::ios::binary);
     if (!file.is_open())
         return "";
+
+    if (startBytePosition > 0) {
+        file.seekg(startBytePosition, std::ios::beg);
+    }
 
     std::string result;
     std::string line;
@@ -338,6 +418,7 @@ std::string TopicManager::getMessages(const std::string& topic,
         } catch (...) {
         }
     }
+    file.close();
 
     return result;
 }
@@ -700,6 +781,48 @@ void TopicManager::recover() {
                 file.close();
             }
             
+            // Check index file health; rebuild if missing or corrupted
+            std::string indexPath = "data/" + topicName + "-" + std::to_string(partitionId) + ".index";
+            bool rebuildIndex = false;
+            std::ifstream testIndex(indexPath, std::ios::in | std::ios::binary);
+            if (!testIndex.is_open()) {
+                rebuildIndex = true;
+            } else {
+                testIndex.seekg(0, std::ios::end);
+                if (testIndex.tellg() % 16 != 0) {
+                    rebuildIndex = true;
+                }
+                testIndex.close();
+            }
+
+            if (rebuildIndex) {
+                std::cout << "[TopicManager::recover] Index missing or corrupt. Rebuilding: " << indexPath << std::endl;
+                std::ifstream logFileForIdx(part->filePath, std::ios::in | std::ios::binary);
+                std::ofstream indexFile(indexPath, std::ios::out | std::ios::binary | std::ios::trunc);
+                if (logFileForIdx.is_open() && indexFile.is_open()) {
+                    std::string logLine;
+                    std::streampos currentLineStart = 0;
+                    while (true) {
+                        currentLineStart = logFileForIdx.tellg();
+                        if (!std::getline(logFileForIdx, logLine)) {
+                            break;
+                        }
+                        size_t pos = logLine.find('|');
+                        if (pos != std::string::npos) {
+                            try {
+                                long offset = std::stol(logLine.substr(0, pos));
+                                long long offVal = offset;
+                                long long posVal = currentLineStart;
+                                indexFile.write(reinterpret_cast<const char*>(&offVal), sizeof(offVal));
+                                indexFile.write(reinterpret_cast<const char*>(&posVal), sizeof(posVal));
+                            } catch (...) {}
+                        }
+                    }
+                }
+                if (logFileForIdx.is_open()) logFileForIdx.close();
+                if (indexFile.is_open()) indexFile.close();
+            }
+
             part->nextOffset = maxOffset + 1;
             meta.partitions.push_back(part);
             std::cout << "[TopicManager::recover] Partition " << partitionId 

@@ -1,0 +1,12 @@
+[METADATA] Registered Broker[1](localhost:9092)
+[METADATA] Metadata Service initialized for Broker 1
+[TopicManager] Constructor: About to call recover()
+[TopicManager::recover] Starting recovery...
+[TopicManager::recover] Found 0 log files
+[TopicManager::recover] Found 0 topics
+[TopicManager::recover] Recovery complete. topicsMetadata size = 0
+[TopicManager::recover] Topics in metadata:
+[TopicManager] Constructor: recover() completed
+[TopicManager] Constructor: topicsMetadata size = 0
+🔥🔥🔥 BROKER IS ON FIRE! 🔥🔥🔥
+🔥 Listening on port 9092 🔥

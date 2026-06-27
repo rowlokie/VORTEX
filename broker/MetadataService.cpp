@@ -45,6 +45,61 @@ void MetadataService::unregisterBroker(int brokerId) {
     clusterMetadata.brokers.erase(brokerId);
     clusterMetadata.lastUpdate = std::chrono::steady_clock::now();
     std::cout << "[METADATA] Unregistered Broker " << brokerId << std::endl;
+    triggerLeaderElection(brokerId);
+}
+
+void MetadataService::triggerLeaderElection(int failedBrokerId) {
+    std::cout << "[ELECTION] Triggering leader election due to failure of Broker " << failedBrokerId << std::endl;
+    
+    std::vector<int> active;
+    for (const auto& pair : clusterMetadata.brokers) {
+        if (pair.second.isAlive()) {
+            active.push_back(pair.first);
+        }
+    }
+    
+    for (auto& topicPair : clusterMetadata.topics) {
+        for (auto& partition : topicPair.second.partitions) {
+            if (partition->leaderBrokerId == failedBrokerId) {
+                std::cout << "[ELECTION] Leader of " << topicPair.first << "-" << partition->partitionId 
+                          << " was failed Broker " << failedBrokerId << ". Electing new leader..." << std::endl;
+                
+                int newLeader = -1;
+                
+                // 1. Try to elect from ISR
+                for (int replicaId : partition->isr) {
+                    if (replicaId != failedBrokerId && std::find(active.begin(), active.end(), replicaId) != active.end()) {
+                        newLeader = replicaId;
+                        break;
+                    }
+                }
+                
+                // 2. If not found in ISR, try any active replica
+                if (newLeader == -1) {
+                    for (int replicaId : partition->replicas) {
+                        if (replicaId != failedBrokerId && std::find(active.begin(), active.end(), replicaId) != active.end()) {
+                            newLeader = replicaId;
+                            break;
+                        }
+                    }
+                }
+                
+                // 3. Fallback: pick any active broker in the cluster (unclean election)
+                if (newLeader == -1 && !active.empty()) {
+                    newLeader = active[0];
+                }
+                
+                partition->leaderBrokerId = newLeader;
+                std::cout << "[ELECTION] Partition " << topicPair.first << "-" << partition->partitionId 
+                          << " new leader elected: Broker " << newLeader << std::endl;
+            }
+            
+            auto& isr = partition->isr;
+            isr.erase(std::remove(isr.begin(), isr.end(), failedBrokerId), isr.end());
+        }
+    }
+    
+    saveToDisk();
 }
 
 void MetadataService::updateBrokerHeartbeat(int brokerId) {

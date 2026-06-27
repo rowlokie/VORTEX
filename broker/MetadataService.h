@@ -61,6 +61,7 @@ private:
     
     void saveToDisk();
     void loadFromDisk();
+    void triggerLeaderElection(int failedBrokerId);
     
 public:
     MetadataService(int brokerId = 1);
